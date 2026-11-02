@@ -1,0 +1,812 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>body{margin:0}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>タヌキ横断</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=DotGothic16&display=swap">
+<style>
+/* Layout: the 3D road fills the whole screen; a small HUD and one signboard-style panel sit on top. */
+:root {
+  --sky: #f3c98b;
+  --ink: #2b2118;
+  --board: #fff4dc;
+  --sign: #e8b320;
+  --danger: #c8372d;
+  --muted: #7a6650;
+  --display: "Dela Gothic One", "Hiragino Kaku Gothic StdN", sans-serif;
+  --body: "DotGothic16", "Hiragino Kaku Gothic ProN", monospace;
+}
+html, body { height: 100%; overflow: hidden; background: var(--sky); color: var(--ink); }
+body { font-family: var(--body); user-select: none; -webkit-user-select: none; }
+#app { position: fixed; inset: 0; touch-action: none; }
+#app canvas { display: block; width: 100%; height: 100%; }
+
+#hud {
+  position: fixed; left: 0; right: 0; top: 0; pointer-events: none;
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  color: var(--board); text-shadow: 2px 2px 0 var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+#score { font: 44px/1 var(--display); }
+#best { font-size: 15px; margin-top: 6px; }
+#hudRight { display: flex; align-items: center; gap: 10px; font-size: 20px; }
+#mute {
+  pointer-events: auto; cursor: pointer; font: 14px var(--body);
+  padding: 6px 10px; border: 2px solid var(--ink); background: var(--board); color: var(--ink);
+}
+#panelWrap {
+  position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); place-items: center;
+  padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+#panel {
+  pointer-events: auto; width: min(100%, 400px); max-height: 100%; overflow-y: auto;
+  background: var(--board); border: 4px solid var(--ink); box-shadow: 8px 8px 0 var(--ink);
+  padding: 20px; display: grid; gap: 14px;
+}
+#heading { margin: 0; font: 40px/1.15 var(--display); text-wrap: balance; }
+#panel.over #heading { font-size: 28px; }
+#message { margin: 0; font-size: 16px; line-height: 1.6; }
+#results { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-variant-numeric: tabular-nums; }
+#results div { display: grid; gap: 2px; }
+#results dt { font-size: 13px; color: var(--muted); }
+#results dd { margin: 0; font: 28px/1 var(--display); }
+#help { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 15px; color: var(--muted); line-height: 1.45; }
+#chars { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+#chars button {
+  display: grid; gap: 4px; justify-items: center; padding: 8px 2px; cursor: pointer;
+  font: 13px var(--body); color: var(--ink); background: transparent; border: 2px solid var(--muted);
+}
+#chars button[aria-pressed="true"] { border-color: var(--ink); background: var(--sign); }
+#chars i { display: block; width: 22px; height: 22px; border: 2px solid var(--ink); }
+#chars small { font-size: 12px; color: var(--muted); }
+#chars button[aria-pressed="true"] small { color: var(--ink); }
+#start {
+  cursor: pointer; padding: 12px; font: 20px var(--display); color: var(--ink);
+  background: var(--sign); border: 3px solid var(--ink);
+}
+button:focus-visible { outline: 3px solid var(--danger); outline-offset: 2px; }
+@media (max-height: 560px) {
+  #heading { font-size: 28px; }
+  #panel { gap: 8px; padding: 14px; }
+}
+</style>
+
+<div id="app"></div>
+<div id="hud">
+  <div><div id="score">0</div><div id="best">最高 0</div></div>
+  <div id="hudRight"><span id="coins">どんぐり 0</span><button id="mute" type="button">音 ON</button></div>
+</div>
+<div id="panelWrap">
+  <section id="panel">
+    <h1 id="heading">タヌキ横断</h1>
+    <p id="message">道路も線路も川も渡って、どこまでも進もう。</p>
+    <dl id="results" hidden>
+      <div><dt>今回</dt><dd id="resScore">0</dd></div>
+      <div><dt>最高</dt><dd id="resBest">0</dd></div>
+    </dl>
+    <ul id="help">
+      <li>タップで前へ、スワイプで左右と後ろへ</li>
+      <li>キーボードは矢印キーか WASD</li>
+      <li>立ち止まるとカラスにさらわれる</li>
+    </ul>
+    <div id="chars"></div>
+    <button id="start" type="button">はじめる</button>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  const W = 7;           // 動ける列は -W..W
+  const L = 26;          // 車と丸太が折り返す横幅の半分
+  const HOP = 0.13;      // 1マスの跳躍にかける秒数
+  const BEHIND = 3.6;    // 画面の進行にこれだけ遅れるとカラスが来る
+  const LOOK = 2;        // カメラは少し先を見る
+  const CAM = new THREE.Vector3(-5, 16, 10);
+
+  const $ = id => document.getElementById(id);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const irand = (a, b) => Math.floor(rand(a, b + 1));
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 保存できなくても遊べる */ } },
+  };
+
+  const CHARS = [
+    { id: 'tanuki', name: 'タヌキ', cost: 0, body: 0x8a6239, belly: 0xe8d3ad, mask: 0x3a2a1e, tail: 0x5e4026 },
+    { id: 'fox', name: 'キツネ', cost: 30, body: 0xd9772a, belly: 0xfff1dc, mask: 0xfff1dc, tail: 0xb85e1d },
+    { id: 'cat', name: 'シロネコ', cost: 60, body: 0xf1ece2, belly: 0xffffff, mask: 0xd98c5f, tail: 0x4a4038 },
+    { id: 'badger', name: 'アナグマ', cost: 100, body: 0x6d6a66, belly: 0x2e2c2a, mask: 0xf0ede6, tail: 0x8f8b86 },
+  ];
+
+  let best = store.get('tc-best', 0);
+  let coins = store.get('tc-coins', 0);
+  let owned = store.get('tc-owned', ['tanuki']);
+  let charId = store.get('tc-char', 'tanuki');
+  let muted = store.get('tc-muted', false);
+
+  // ---- 音 ----
+  let ac = null;
+  const unlockAudio = () => {
+    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (C) ac = new C();
+  };
+  const tone = (freq, dur, type = 'square', vol = 0.05, delay = 0, slide = 0) => {
+    if (!ac || muted) return;
+    const t = ac.currentTime + delay, o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur);
+  };
+  const sfx = {
+    hop: () => tone(420, 0.07, 'square', 0.03, 0, 700),
+    coin: () => { tone(880, 0.07); tone(1320, 0.1, 'square', 0.05, 0.07); },
+    bump: () => tone(140, 0.07, 'square', 0.04),
+    hit: () => tone(240, 0.3, 'sawtooth', 0.09, 0, 50),
+    splash: () => tone(500, 0.3, 'triangle', 0.1, 0, 70),
+    crow: () => { tone(620, 0.16, 'sawtooth', 0.07, 0, 300); tone(620, 0.2, 'sawtooth', 0.07, 0.22, 280); },
+    bell: on => tone(on ? 900 : 700, 0.14, 'square', 0.025),
+  };
+
+  // ---- 描画の土台 ----
+  if (!window.THREE) { $('message').textContent = '3D の部品を読み込めませんでした。再読み込みしてください。'; return; }
+  let renderer;
+  try { renderer = new THREE.WebGLRenderer({ antialias: true }); }
+  catch { $('message').textContent = 'この環境では WebGL が使えないため遊べません。'; $('start').hidden = true; return; }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  $('app').appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf3c98b);
+  scene.add(new THREE.HemisphereLight(0xfff0d8, 0x7d6a58, 0.72));
+  const sun = new THREE.DirectionalLight(0xffe2b4, 0.82);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -26, right: 26, top: 26, bottom: -26, near: 1, far: 70 });
+  scene.add(sun, sun.target);
+
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 120);
+  camera.position.copy(CAM);
+  camera.lookAt(0, 0, 0);
+
+  const resize = () => {
+    const w = window.innerWidth, h = window.innerHeight, a = w / h;
+    const halfH = Math.max(8, 6.5 / a);
+    Object.assign(camera, { left: -halfH * a, right: halfH * a, top: halfH, bottom: -halfH });
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h, false);
+  };
+  window.addEventListener('resize', resize);
+  resize();
+
+  const unit = new THREE.BoxGeometry(1, 1, 1);
+  const mats = new Map();
+  const mat = c => { if (!mats.has(c)) mats.set(c, new THREE.MeshLambertMaterial({ color: c })); return mats.get(c); };
+  const box = (w, h, d, c, x = 0, y = 0, z = 0, cast = true) => {
+    const m = new THREE.Mesh(unit, mat(c));
+    m.scale.set(w, h, d); m.position.set(x, y + h / 2, z);
+    m.castShadow = cast; m.receiveShadow = !cast;
+    return m;
+  };
+  const group = (...c) => { const g = new THREE.Group(); if (c.length) g.add(...c); return g; };
+
+  // 動ける範囲の外を暗くする
+  const shade = new THREE.MeshBasicMaterial({ color: 0x2b1a10, transparent: true, opacity: 0.32, depthTest: false });
+  const shadeL = new THREE.Mesh(new THREE.PlaneGeometry(80, 300), shade);
+  const shadeR = shadeL.clone();
+  [shadeL, shadeR].forEach(s => { s.rotation.x = -Math.PI / 2; s.position.y = 0.02; s.renderOrder = 5; scene.add(s); });
+  shadeL.position.x = -(W + 0.5) - 40;
+  shadeR.position.x = W + 0.5 + 40;
+
+  // ---- モデル ----
+  const treeModel = () => {
+    const h = irand(0, 2);
+    const g = group(box(0.28, 0.45, 0.28, 0x6b4a2c));
+    for (let i = 0; i <= h; i++) g.add(box(0.82 - i * 0.2, 0.42, 0.82 - i * 0.2, i % 2 ? 0x4f8a45 : 0x3f7a42, 0, 0.42 + i * 0.4));
+    return g;
+  };
+  const rockModel = () => group(box(0.74, 0.42, 0.7, 0x9b9488), box(0.42, 0.2, 0.4, 0xb4ad9f, 0.06, 0.42, -0.04));
+  const jizoModel = () => group(
+    box(0.56, 0.1, 0.56, 0x8d8679),
+    box(0.36, 0.42, 0.3, 0xa8a193, 0, 0.1),
+    box(0.3, 0.26, 0.28, 0xb9b2a4, 0, 0.52),
+    box(0.4, 0.15, 0.33, 0xc8372d, 0, 0.36),
+  );
+  const acornModel = () => {
+    const g = group(box(0.26, 0.26, 0.26, 0xa86b2d, 0, 0.14), box(0.32, 0.1, 0.32, 0x5e4026, 0, 0.38), box(0.06, 0.08, 0.06, 0x5e4026, 0, 0.48));
+    return g;
+  };
+  const CAR_COLORS = [0xf4f1ea, 0x2f6f9f, 0xc8372d, 0xe8b320, 0x3f7a55];
+  const wheels = (g, len) => {
+    [-1, 1].forEach(s => [-0.36, 0.36].forEach(z => g.add(box(0.28, 0.24, 0.1, 0x241f1b, s * (len / 2 - 0.3), 0, z * 1.05))));
+  };
+  const carModel = dir => {
+    const c = pick(CAR_COLORS), g = group();
+    const kind = pick(['car', 'car', 'kei', 'bus']);
+    let len;
+    if (kind === 'car') {
+      len = 1.5;
+      g.add(box(len, 0.34, 0.78, c, 0, 0.14), box(0.84, 0.26, 0.68, 0xdfe7e6, -0.08, 0.48), box(0.86, 0.05, 0.7, c, -0.08, 0.74));
+    } else if (kind === 'kei') {
+      len = 1.9;
+      g.add(box(len, 0.22, 0.8, 0xf4f1ea, 0, 0.14), box(0.62, 0.42, 0.76, 0xf4f1ea, 0.62, 0.34), box(0.3, 0.2, 0.7, 0x9fc0c4, 0.82, 0.48));
+      g.add(box(1.2, 0.18, 0.06, 0xc9c5ba, -0.32, 0.36, 0.37), box(1.2, 0.18, 0.06, 0xc9c5ba, -0.32, 0.36, -0.37), box(0.06, 0.18, 0.76, 0xc9c5ba, -0.92, 0.36));
+    } else {
+      len = 3.2;
+      g.add(box(len, 0.82, 0.86, 0xf4f1ea, 0, 0.14), box(len, 0.2, 0.87, 0x2f7a6a, 0, 0.24), box(len - 0.3, 0.2, 0.88, 0x3b4a50, 0, 0.62));
+    }
+    wheels(g, len);
+    g.rotation.y = dir > 0 ? 0 : Math.PI;
+    return { mesh: g, len };
+  };
+  const trainModel = dir => {
+    const g = group(), cars = 3, cl = 6.2;
+    for (let i = 0; i < cars; i++) {
+      const x = (i - (cars - 1) / 2) * cl;
+      g.add(box(cl - 0.2, 1.05, 0.96, 0xf1ece2, x, 0.14), box(cl - 0.2, 0.26, 0.97, 0x2f7a4c, x, 0.3), box(cl - 0.8, 0.26, 0.98, 0x3b4a50, x, 0.72), box(cl - 0.4, 0.08, 0.7, 0x8d8679, x, 1.19));
+    }
+    g.rotation.y = dir > 0 ? 0 : Math.PI;
+    return { mesh: g, len: cars * cl };
+  };
+  const logModel = len => {
+    const g = group(box(len, 0.32, 0.72, 0x7a5230, 0, -0.22));
+    g.add(box(0.05, 0.28, 0.6, 0xc69a63, -len / 2, -0.2), box(0.05, 0.28, 0.6, 0xc69a63, len / 2, -0.2));
+    for (let x = -len / 2 + 0.6; x < len / 2; x += 0.9) g.add(box(0.08, 0.02, 0.72, 0x5e4026, x, 0.1, 0, false));
+    return g;
+  };
+  const padModel = () => group(box(0.76, 0.06, 0.76, 0x5e9e4e, 0, -0.08), box(0.2, 0.05, 0.2, 0xf2a7b8, 0.12, -0.02, 0.1));
+  const crowModel = () => {
+    const g = group(box(0.46, 0.4, 0.84, 0x1d1b22), box(0.34, 0.32, 0.34, 0x26232c, 0, 0.26, -0.5), box(0.12, 0.08, 0.26, 0x3d3a44, 0, 0.3, -0.76));
+    const a = box(1.1, 0.08, 0.5, 0x26232c, -0.74, 0.26), b = box(1.1, 0.08, 0.5, 0x26232c, 0.74, 0.26);
+    g.add(a, b); g.userData.wings = [a, b];
+    return g;
+  };
+  const charModel = c => {
+    const g = group(
+      box(0.6, 0.42, 0.66, c.body, 0, 0.1),
+      box(0.42, 0.12, 0.5, c.belly, 0, 0.08),
+      box(0.52, 0.42, 0.4, c.body, 0, 0.34, -0.32),
+      box(0.54, 0.13, 0.42, c.mask, 0, 0.46, -0.32),
+      box(0.08, 0.08, 0.04, 0xffffff, -0.13, 0.49, -0.54),
+      box(0.08, 0.08, 0.04, 0xffffff, 0.13, 0.49, -0.54),
+      box(0.12, 0.09, 0.08, 0x241f1b, 0, 0.36, -0.54),
+      box(0.13, 0.13, 0.1, c.mask, -0.18, 0.76, -0.3),
+      box(0.13, 0.13, 0.1, c.mask, 0.18, 0.76, -0.3),
+      box(0.14, 0.1, 0.14, c.mask, -0.2, 0, -0.2),
+      box(0.14, 0.1, 0.14, c.mask, 0.2, 0, -0.2),
+      box(0.14, 0.1, 0.14, c.mask, -0.2, 0, 0.22),
+      box(0.14, 0.1, 0.14, c.mask, 0.2, 0, 0.22),
+      box(0.22, 0.22, 0.36, c.tail, 0, 0.2, 0.46),
+      box(0.23, 0.23, 0.12, c.mask, 0, 0.2, 0.58),
+    );
+    return g;
+  };
+
+  // ---- 世界 ----
+  const lanes = new Map();
+  const world = group();
+  scene.add(world);
+  const gen = { type: 'grass', left: 0, pathX: 0, riverDir: 1, top: -11 };
+
+  const nextType = row => {
+    if (gen.left > 0) { gen.left--; return gen.type; }
+    if (row < 3) return 'grass';
+    const prev = gen.type;
+    const type = prev === 'grass'
+      ? pick(['road', 'road', 'road', 'river', 'river', 'rail'])
+      : 'grass';
+    const d = Math.min(1, row / 150);
+    gen.left = type === 'grass' ? irand(0, 2)
+      : type === 'road' ? irand(0, 2 + Math.round(d * 2))
+      : type === 'river' ? irand(0, 2 + Math.round(d))
+      : irand(0, 1);
+    gen.type = type;
+    return type;
+  };
+
+  const addAcorn = (lane, avoid) => {
+    if (lane.row < 2 || Math.random() > 0.13) return;
+    const x = irand(-W, W);
+    if (avoid && avoid.has(x)) return;
+    const mesh = acornModel();
+    mesh.position.set(x, 0, 0);
+    lane.group.add(mesh);
+    lane.coin = { x, mesh };
+  };
+
+  const buildGrass = lane => {
+    const { row } = lane, blocks = lane.blocks = new Set();
+    lane.group.add(box(90, 1, 1, row % 2 ? 0x9cc25a : 0xa9cd63, 0, -1, 0, false));
+    if (row < -1) {
+      for (let x = -W - 7; x <= W + 7; x++) if (x % 1 === 0) { blocks.add(x); const t = treeModel(); t.position.x = x; lane.group.add(t); }
+      return;
+    }
+    if (row >= 2) {
+      const density = 0.16 + Math.min(0.14, row * 0.0015);
+      for (let x = -W; x <= W; x++) if (Math.random() < density) blocks.add(x);
+      const from = gen.pathX;
+      gen.pathX = Math.max(-W, Math.min(W, gen.pathX + irand(-3, 3)));
+      for (let x = Math.min(from, gen.pathX); x <= Math.max(from, gen.pathX); x++) blocks.delete(x);
+    }
+    blocks.forEach(x => {
+      const r = Math.random();
+      const m = r < 0.68 ? treeModel() : r < 0.9 ? rockModel() : jizoModel();
+      m.position.x = x; lane.group.add(m);
+    });
+    for (let x = W + 1; x <= W + 7; x++) [x, -x].forEach(sx => {
+      if (Math.random() < 0.42) { blocks.add(sx); const t = treeModel(); t.position.x = sx; lane.group.add(t); }
+    });
+    addAcorn(lane, blocks);
+  };
+
+  const fillMovers = (lane, make, gapMin, gapMax) => {
+    let cursor = -L;
+    while (cursor < L - 1) {
+      const it = make();
+      const x = cursor + it.len / 2;
+      if (x + it.len / 2 > L) break;
+      it.x = x; it.mesh.position.x = x;
+      lane.group.add(it.mesh);
+      lane.items.push(it);
+      cursor += it.len + rand(gapMin, gapMax);
+    }
+  };
+
+  const buildRoad = lane => {
+    const { row } = lane, d = Math.min(1, row / 150);
+    lane.group.add(box(90, 1, 1, 0x4c4a4d, 0, -1, 0, false));
+    lane.dir = Math.random() < 0.5 ? -1 : 1;
+    lane.speed = rand(2.2, 3.8) + d * 2.6;
+    if (lanes.get(row - 1)?.type === 'road') {
+      for (let x = -L; x < L; x += 3) lane.group.add(box(1.2, 0.01, 0.08, 0xe7e1cf, x, 0, 0.5, false));
+    }
+    fillMovers(lane, () => carModel(lane.dir), 5 - d * 1.6, 12 - d * 4);
+    addAcorn(lane);
+  };
+
+  const buildRail = lane => {
+    lane.group.add(box(90, 1, 1, 0x8b7f70, 0, -1, 0, false));
+    for (let x = -L; x < L; x += 1.5) lane.group.add(box(0.3, 0.03, 0.84, 0x6b4a2c, x, 0, 0, false));
+    [-0.28, 0.28].forEach(z => lane.group.add(box(90, 0.06, 0.07, 0xc9c5ba, 0, 0.03, z, false)));
+    lane.dir = Math.random() < 0.5 ? -1 : 1;
+    lane.train = trainModel(lane.dir);
+    lane.train.mesh.visible = false;
+    lane.group.add(lane.train.mesh);
+    lane.trainState = 'wait';
+    lane.timer = rand(1, 5);
+    lane.lamp = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ color: 0xff3b2f, transparent: true, opacity: 0.55 }));
+    lane.lamp.scale.set(W * 2 + 1, 0.02, 0.12);
+    lane.lamp.position.set(0, 0.1, 0.46);
+    lane.lamp.visible = false;
+    lane.group.add(lane.lamp);
+    lane.bells = [-1, 1].map(s => {
+      const lightA = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ color: 0x5a1a14 }));
+      lightA.scale.set(0.2, 0.2, 0.2); lightA.position.set(s * (W + 1), 1.2, 0.36);
+      lane.group.add(box(0.1, 1.2, 0.1, 0xf1ece2, s * (W + 1), 0, 0.46), box(0.56, 0.1, 0.1, 0xe8b320, s * (W + 1), 0.92, 0.46), lightA);
+      return lightA;
+    });
+  };
+
+  const buildRiver = lane => {
+    const { row } = lane, d = Math.min(1, row / 150);
+    lane.group.add(box(90, 1, 1, 0x3f93a8, 0, -1.25, 0, false));
+    const prev = lanes.get(row - 1);
+    lane.sub = Math.random() < 0.3 ? 'pad' : 'log';
+    if (lane.sub === 'pad') {
+      lane.pads = new Set([gen.pathX]);
+      for (let x = -W; x <= W; x++) if (Math.random() < 0.34) lane.pads.add(x);
+      lane.pads.forEach(x => { const p = padModel(); p.position.x = x; lane.group.add(p); });
+      return;
+    }
+    gen.riverDir = prev?.type === 'river' ? -gen.riverDir : pick([-1, 1]);
+    lane.dir = gen.riverDir;
+    lane.speed = rand(1.1, 2.1) + d * 1.3;
+    fillMovers(lane, () => { const len = irand(2, 4); return { mesh: logModel(len), len }; }, 1.6, 3.4 + d);
+  };
+
+  const makeLane = row => {
+    const type = row < 3 ? 'grass' : nextType(row);
+    const lane = { row, type, items: [], group: group(), dir: 1, speed: 0 };
+    lane.group.position.z = -row;
+    world.add(lane.group);
+    lanes.set(row, lane);
+    ({ grass: buildGrass, road: buildRoad, rail: buildRail, river: buildRiver })[type](lane);
+    return lane;
+  };
+
+  const resetWorld = () => {
+    lanes.forEach(l => world.remove(l.group));
+    lanes.clear();
+    Object.assign(gen, { type: 'grass', left: 0, pathX: 0, riverDir: 1, top: -11 });
+  };
+
+  // ---- プレイヤー ----
+  const p = { x: 0, row: 0, y: 0, mesh: null, ride: null, hop: null, queue: null, baseY: 0, maxRow: 0 };
+  const rig = group();
+  scene.add(rig);
+  const setChar = id => {
+    charId = id; store.set('tc-char', id);
+    if (p.mesh) rig.remove(p.mesh);
+    p.mesh = charModel(CHARS.find(c => c.id === id) || CHARS[0]);
+    rig.add(p.mesh);
+  };
+
+  const crow = crowModel();
+  crow.visible = false;
+  scene.add(crow);
+
+  // ---- 粒 ----
+  const bits = [];
+  const burst = (x, y, z, color, n, power = 3) => {
+    for (let i = 0; i < n; i++) {
+      const m = box(0.12, 0.12, 0.12, color);
+      m.position.set(x, y, z);
+      scene.add(m);
+      bits.push({ m, life: 0.7, vx: rand(-power, power) / 2, vy: rand(2, power + 2), vz: rand(-power, power) / 2 });
+    }
+  };
+
+  // ---- 状態 ----
+  let state = 'title'; // title / play / dying / over
+  let camRow = 0, deadT = 0, deadKind = '', flung = 0, bellT = 0, bellOn = false, moved = false, overAt = 0;
+
+  const updateHud = () => {
+    $('score').textContent = p.maxRow;
+    $('best').textContent = `最高 ${best}`;
+    $('coins').textContent = `どんぐり ${coins}`;
+    $('mute').textContent = muted ? '音 OFF' : '音 ON';
+  };
+
+  const renderChars = () => {
+    const wrap = $('chars');
+    wrap.replaceChildren();
+    CHARS.forEach(c => {
+      const b = document.createElement('button');
+      const have = owned.includes(c.id);
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(c.id === charId));
+      const sw = document.createElement('i');
+      sw.style.background = '#' + c.body.toString(16).padStart(6, '0');
+      const nm = document.createElement('span');
+      nm.textContent = c.name;
+      const st = document.createElement('small');
+      st.textContent = have ? (c.id === charId ? '選択中' : '選ぶ') : `どんぐり ${c.cost}`;
+      b.append(sw, nm, st);
+      b.addEventListener('click', () => {
+        unlockAudio();
+        if (!owned.includes(c.id)) {
+          if (coins < c.cost) { sfx.bump(); st.textContent = `あと ${c.cost - coins}`; return; }
+          coins -= c.cost; owned = [...owned, c.id];
+          store.set('tc-coins', coins); store.set('tc-owned', owned);
+          sfx.coin(); updateHud();
+        }
+        setChar(c.id); renderChars();
+      });
+      wrap.append(b);
+    });
+  };
+
+  const showPanel = over => {
+    $('panelWrap').hidden = false;
+    $('panel').classList.toggle('over', over);
+    $('results').hidden = !over;
+    $('help').hidden = over;
+    $('start').textContent = over ? 'もう一度' : 'はじめる';
+    renderChars();
+  };
+
+  const newRun = () => {
+    resetWorld();
+    for (let r = -11; r <= 30; r++) makeLane(r);
+    Object.assign(p, { x: 0, row: 0, y: 0, ride: null, hop: null, queue: null, baseY: 0, maxRow: 0 });
+    setChar(charId);
+    p.mesh.rotation.set(0, 0, 0); p.mesh.scale.set(1, 1, 1); p.mesh.position.set(0, 0, 0);
+    p.mesh.visible = true;
+    rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0);
+    if (crow.parent !== scene) scene.add(crow);
+    crow.visible = false;
+    camRow = 0; deadT = 0; moved = false;
+    updateHud();
+  };
+
+  const start = () => {
+    unlockAudio();
+    newRun();
+    state = 'play';
+    $('panelWrap').hidden = true;
+  };
+
+  const MESSAGES = {
+    road: '車にはねられた',
+    train: '電車にはねられた',
+    drown: '川に落ちた',
+    swept: '丸太ごと流された',
+    crow: 'カラスにさらわれた',
+  };
+
+  const die = kind => {
+    if (state !== 'play') return;
+    state = 'dying'; deadKind = kind; deadT = 0; flung = 0;
+    p.hop = null; p.queue = null; p.ride = null;
+    if (kind === 'road') { sfx.hit(); p.mesh.scale.set(1.35, 0.16, 1.35); burst(rig.position.x, 0.3, rig.position.z, 0xe8d3ad, 8); }
+    if (kind === 'train') { sfx.hit(); flung = lanes.get(p.row)?.dir || 1; burst(rig.position.x, 0.5, rig.position.z, 0xe8d3ad, 14, 5); }
+    if (kind === 'drown' || kind === 'swept') { sfx.splash(); burst(rig.position.x, 0, rig.position.z, 0xbfe6ea, 16); }
+    if (kind === 'crow') {
+      sfx.crow();
+      crow.visible = true;
+      crow.position.set(rig.position.x + 2, 9, rig.position.z - 12);
+      crow.rotation.set(0, Math.PI * 0.05, 0);
+    }
+  };
+
+  const finish = () => {
+    state = 'over'; overAt = performance.now();
+    const isRecord = p.maxRow > best;
+    if (isRecord) { best = p.maxRow; store.set('tc-best', best); }
+    $('heading').textContent = MESSAGES[deadKind];
+    $('message').textContent = isRecord ? '最高記録を更新した。' : `${p.maxRow} マス進んだ。`;
+    $('resScore').textContent = p.maxRow;
+    $('resBest').textContent = best;
+    updateHud();
+    showPanel(true);
+  };
+
+  // ---- 移動 ----
+  const tryMove = (dx, dr) => {
+    if (state !== 'play') return;
+    if (p.hop) { p.queue = [dx, dr]; return; }
+    p.mesh.rotation.y = dr > 0 ? 0 : dr < 0 ? Math.PI : dx > 0 ? -Math.PI / 2 : Math.PI / 2;
+    const toRow = p.row + dr;
+    const target = lanes.get(toRow);
+    if (!target) return;
+    const keepRide = !!p.ride && dr === 0;
+    const toX = keepRide ? p.x + dx : Math.round(p.x) + dx;
+    if (Math.abs(Math.round(toX)) > W || target.blocks?.has(Math.round(toX))) { sfx.bump(); return; }
+    if (!keepRide) p.ride = null;
+    p.hop = { t: 0, fromX: p.x, toX, fromRow: p.row, toRow, fromY: p.baseY, keepRide };
+    p.row = toRow;
+    moved = true;
+    sfx.hop();
+  };
+
+  const land = () => {
+    const lane = lanes.get(p.row);
+    p.baseY = 0;
+    p.ride = null;
+    if (lane.type === 'river') {
+      if (lane.sub === 'pad') {
+        const x = Math.round(p.x);
+        if (!lane.pads.has(x)) return die('drown');
+        p.x = x;
+      } else {
+        const log = lane.items.find(it => Math.abs(p.x - it.x) <= it.len / 2 + 0.15);
+        if (!log) return die('drown');
+        p.ride = log; p.baseY = 0.1;
+      }
+    }
+    if (lane.coin && lane.coin.x === Math.round(p.x)) {
+      lane.group.remove(lane.coin.mesh);
+      lane.coin = null;
+      coins++; store.set('tc-coins', coins);
+      sfx.coin(); updateHud();
+    }
+    if (p.row > p.maxRow) { p.maxRow = p.row; updateHud(); }
+  };
+
+  // ---- 更新 ----
+  const updateLanes = dt => {
+    lanes.forEach(lane => {
+      if (lane.type === 'road' || (lane.type === 'river' && lane.sub === 'log')) {
+        const v = lane.speed * lane.dir * dt;
+        lane.items.forEach(it => {
+          it.x += v;
+          if (it.x > L) it.x -= L * 2;
+          if (it.x < -L) it.x += L * 2;
+          it.mesh.position.x = it.x;
+        });
+      }
+      if (lane.type === 'rail') updateRail(lane, dt);
+      if (lane.coin) lane.coin.mesh.rotation.y += dt * 2;
+    });
+  };
+
+  const updateRail = (lane, dt) => {
+    const near = Math.abs(lane.row - p.row) < 9;
+    lane.timer -= dt;
+    if (lane.trainState === 'wait' && lane.timer <= 0) {
+      lane.trainState = 'warn'; lane.timer = 1.5; lane.lamp.visible = true;
+    } else if (lane.trainState === 'warn') {
+      const blink = Math.floor(lane.timer * 6) % 2 === 0;
+      lane.lamp.visible = blink;
+      lane.bells[0].material.color.setHex(blink ? 0xff3b2f : 0x5a1a14);
+      lane.bells[1].material.color.setHex(blink ? 0x5a1a14 : 0xff3b2f);
+      if (near && state === 'play') {
+        bellT -= dt;
+        if (bellT <= 0) { bellOn = !bellOn; sfx.bell(bellOn); bellT = 0.22; }
+      }
+      if (lane.timer <= 0) {
+        lane.trainState = 'run';
+        lane.train.x = -lane.dir * (L + 12);
+        lane.train.mesh.visible = true;
+      }
+    } else if (lane.trainState === 'run') {
+      lane.train.x += lane.dir * 34 * dt;
+      lane.train.mesh.position.x = lane.train.x;
+      if (lane.train.x * lane.dir > L + 12) {
+        lane.trainState = 'wait'; lane.timer = rand(3.5, 8);
+        lane.train.mesh.visible = false; lane.lamp.visible = false;
+        lane.bells.forEach(b => b.material.color.setHex(0x5a1a14));
+      }
+    }
+  };
+
+  const updatePlayer = dt => {
+    const hop = p.hop;
+    if (hop) {
+      if (hop.keepRide && p.ride) {
+        const v = lanes.get(p.row).speed * lanes.get(p.row).dir * dt;
+        hop.fromX += v; hop.toX += v;
+      }
+      hop.t = Math.min(1, hop.t + dt / HOP);
+      const e = hop.t;
+      p.x = hop.fromX + (hop.toX - hop.fromX) * e;
+      p.visualRow = hop.fromRow + (hop.toRow - hop.fromRow) * e;
+      p.y = hop.fromY + Math.sin(e * Math.PI) * 0.5;
+      p.mesh.scale.set(1 - 0.12 * Math.sin(e * Math.PI), 1 + 0.2 * Math.sin(e * Math.PI), 1 - 0.12 * Math.sin(e * Math.PI));
+      if (hop.t >= 1) {
+        p.hop = null;
+        p.mesh.scale.set(1, 1, 1);
+        land();
+        if (state === 'play' && p.queue) { const q = p.queue; p.queue = null; tryMove(q[0], q[1]); }
+      }
+    } else {
+      p.visualRow = p.row;
+      p.y = p.baseY;
+      if (p.ride) {
+        const lane = lanes.get(p.row);
+        p.x += lane.speed * lane.dir * dt;
+        if (Math.abs(p.x) > W + 1.2) die('swept');
+      }
+    }
+    rig.position.set(p.x, p.y, -p.visualRow);
+
+    // 衝突
+    if (state !== 'play') return;
+    const lane = lanes.get(p.row);
+    if (lane.type === 'road' && lane.items.some(it => Math.abs(p.x - it.x) < it.len / 2 + 0.3)) die('road');
+    if (lane.type === 'rail' && lane.trainState === 'run' && Math.abs(p.x - lane.train.x) < lane.train.len / 2 + 0.3) die('train');
+  };
+
+  const updateCamera = dt => {
+    const pr = p.visualRow ?? p.row;
+    if (state === 'play') {
+      if (moved) camRow += (0.42 + Math.min(0.5, p.maxRow * 0.003)) * dt;
+      if (pr > camRow) camRow += (pr - camRow) * Math.min(1, dt * 4);
+      if (p.row < camRow - BEHIND) die('crow');
+    }
+    while (gen.top <= camRow + 30) gen.top++, lanes.has(gen.top) || makeLane(gen.top);
+    lanes.forEach((lane, row) => {
+      if (row < camRow - 16) { world.remove(lane.group); lanes.delete(row); }
+    });
+    const tx = p.x * 0.55, tz = -(camRow + LOOK);
+    camera.position.set(tx + CAM.x, CAM.y, tz + CAM.z);
+    sun.target.position.set(tx, 0, tz);
+    sun.position.set(tx - 9, 24, tz + 7);
+    shadeL.position.z = shadeR.position.z = tz;
+  };
+
+  const updateDeath = dt => {
+    deadT += dt;
+    if (flung) {
+      rig.position.x += flung * 20 * dt;
+      rig.position.y += 7 * dt;
+      rig.rotation.z += 12 * dt;
+    }
+    if (deadKind === 'drown' || deadKind === 'swept') {
+      p.mesh.position.y = Math.max(-1.4, -deadT * 3);
+    }
+    if (deadKind === 'crow') {
+      const wings = crow.userData.wings;
+      wings[0].rotation.z = Math.sin(deadT * 26) * 0.5;
+      wings[1].rotation.z = -Math.sin(deadT * 26) * 0.5;
+      if (deadT < 0.45) {
+        const k = 1 - deadT / 0.45;
+        crow.position.set(rig.position.x + 2 * k, 0.9 + 8 * k, rig.position.z - 12 * k);
+      } else {
+        crow.position.z += 16 * dt; crow.position.y += 3 * dt;
+        rig.position.set(crow.position.x, crow.position.y - 0.75, crow.position.z);
+      }
+    }
+    if (deadT > (deadKind === 'crow' ? 1.3 : 0.95)) finish();
+  };
+
+  const updateBits = dt => {
+    for (let i = bits.length - 1; i >= 0; i--) {
+      const b = bits[i];
+      b.life -= dt; b.vy -= 14 * dt;
+      b.m.position.x += b.vx * dt; b.m.position.y += b.vy * dt; b.m.position.z += b.vz * dt;
+      if (b.life <= 0) { scene.remove(b.m); bits.splice(i, 1); }
+    }
+  };
+
+  let last = performance.now();
+  const frame = now => {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    updateLanes(dt);
+    if (state === 'play') updatePlayer(dt);
+    if (state === 'dying') updateDeath(dt);
+    updateCamera(dt);
+    updateBits(dt);
+    renderer.render(scene, camera);
+    requestAnimationFrame(frame);
+  };
+
+  // ---- 入力 ----
+  const keys = {
+    ArrowUp: [0, 1], KeyW: [0, 1],
+    ArrowDown: [0, -1], KeyS: [0, -1],
+    ArrowLeft: [-1, 0], KeyA: [-1, 0],
+    ArrowRight: [1, 0], KeyD: [1, 0],
+  };
+  window.addEventListener('keydown', e => {
+    if ((e.code === 'Space' || e.code === 'Enter') && (state === 'title' || state === 'over')) {
+      if (performance.now() - overAt > 350) { e.preventDefault(); start(); }
+      return;
+    }
+    const k = keys[e.code];
+    if (!k) return;
+    e.preventDefault();
+    if (!e.repeat) { unlockAudio(); tryMove(k[0], k[1]); }
+  });
+
+  let down = null;
+  const el = renderer.domElement;
+  el.addEventListener('pointerdown', e => {
+    down = { x: e.clientX, y: e.clientY };
+    unlockAudio();
+    if (state === 'play' && !p.hop) p.mesh.scale.set(1.12, 0.78, 1.12);
+  });
+  const release = e => {
+    if (!down) return;
+    const dx = e.clientX - down.x, dy = e.clientY - down.y;
+    down = null;
+    if (state !== 'play') return;
+    if (!p.hop) p.mesh.scale.set(1, 1, 1);
+    if (Math.hypot(dx, dy) < 24) return tryMove(0, 1);
+    if (Math.abs(dx) > Math.abs(dy)) tryMove(Math.sign(dx), 0);
+    else tryMove(0, dy < 0 ? 1 : -1);
+  };
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', () => { down = null; if (state === 'play' && !p.hop) p.mesh.scale.set(1, 1, 1); });
+
+  $('start').addEventListener('click', start);
+  $('mute').addEventListener('click', () => {
+    unlockAudio();
+    muted = !muted; store.set('tc-muted', muted); updateHud();
+    $('mute').blur();
+  });
+
+  newRun();
+  showPanel(false);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
